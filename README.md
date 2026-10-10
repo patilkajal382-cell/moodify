@@ -54,7 +54,9 @@ Spotify Web API, Groq API
 
 4\. uvicorn main:app --reload
 
-5\. Open http://127.0.0.1:8000/login, then /build-catalogue once
+5\. 5. Open http://127.0.0.1:8000/login, then /build-catalogue once, then reload
+
+&#x20;  /relabel-some until still\_to\_do is 0
 
 
 
@@ -62,7 +64,7 @@ Spotify Web API, Groq API
 
 /login, /top, /devices, /play, /sync, /stats?period=week|month,
 
-/build-catalogue, /mood, /suggest, /playlist
+/build-catalogue, /relabel-some, /mood, /suggest, /playlist
 
 
 
@@ -70,9 +72,9 @@ Spotify Web API, Groq API
 
 \- Spotify removed audio features and recommendations for new apps in 2024, so
 
-&#x20; moods come from my own tagged catalogue, which is built from Spotify search
+&#x20; each song's mood and energy are labelled by an LLM from its title and artist,
 
-&#x20; queries, not from analysis of each song
+&#x20; not by analysing the audio, so some labels can be off 
 
 \- Weekly and monthly stats only cover the time since logging started, because
 

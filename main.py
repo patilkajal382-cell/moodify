@@ -658,3 +658,82 @@ def relabel_some(limit: int = 40):
         "still_to_do": before - len(new_ids),
         "total": collection.count(),
     }
+
+def llm_json(prompt, provider=None):
+    provider = (provider or os.getenv("LLM_PROVIDER", "groq")).lower()
+    if provider == "gemini":
+        model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+        r = requests.post(
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            + model + ":generateContent",
+            headers={"x-goog-api-key": os.getenv("GEMINI_API_KEY", "")},
+            json={
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {
+                    "responseMimeType": "application/json",
+                    "temperature": 0.2,
+                },
+            },
+            timeout=60,
+        )
+        if r.status_code != 200:
+            return {"error": r.status_code, "detail": r.text[:300]}
+        try:
+            text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+            return json.loads(text)
+        except Exception as e:
+            return {"error": "bad json", "detail": str(e)}
+    r = requests.post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        headers={"Authorization": "Bearer " + os.getenv("GROQ_API_KEY", "")},
+        json={
+            "model": "openai/gpt-oss-20b",
+            "messages": [{"role": "user", "content": prompt}],
+            "response_format": {"type": "json_object"},
+            "temperature": 0.2,
+        },
+        timeout=60,
+    )
+    if r.status_code != 200:
+        return {"error": r.status_code, "detail": r.text[:300]}
+    try:
+        return json.loads(r.json()["choices"][0]["message"]["content"])
+    except Exception as e:
+        return {"error": "bad json", "detail": str(e)}
+
+
+@app.get("/llm-test")
+def llm_test(provider: str = "groq"):
+    prompt = (
+        "Reply with ONLY a JSON object with keys moods (list of 3 words) and "
+        'energy ("low", "medium" or "high") for this mood: tired and calm.'
+    )
+    return {"provider": provider, "result": llm_json(prompt, provider)}
+
+
+@app.get("/gemini-models")
+def gemini_models():
+    r = requests.get(
+        "https://generativelanguage.googleapis.com/v1beta/models",
+        headers={"x-goog-api-key": os.getenv("GEMINI_API_KEY", "")},
+        timeout=30,
+    )
+    if r.status_code != 200:
+        return {"error": r.status_code, "detail": r.text[:300]}
+    return [
+        m["name"].replace("models/", "")
+        for m in r.json().get("models", [])
+        if "generateContent" in m.get("supportedGenerationMethods", [])
+    ]
+
+def parse_mood(text):
+    prompt = (
+        "You turn a person's mood description into a music profile. "
+        "Reply with ONLY a JSON object with these keys: "
+        '"moods" (list of 3 to 5 short mood words), '
+        '"energy" (one of "low", "medium", "high"), '
+        '"genres" (list of 2 to 4 music genres that fit), '
+        '"search_text" (one short sentence describing the music that fits). '
+        "Mood description: " + text
+    )
+    return llm_json(prompt)

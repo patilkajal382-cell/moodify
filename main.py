@@ -469,3 +469,192 @@ def playlist(text: str):
             }
     return {"error": added.status_code, "detail": added.text}
 
+
+def label_tracks(tracks):
+    lines = "\n".join(
+        str(i + 1) + ". " + t["track"] + " by " + t["artist"]
+        for i, t in enumerate(tracks)
+    )
+    prompt = (
+        "For each song below, give its likely mood and energy, judged from "
+        "the title and artist. Reply with ONLY a JSON object like "
+        '{"labels": [{"moods": ["word", "word", "word"], "energy": "low"}]} '
+        'where energy is "low", "medium" or "high", with exactly one entry '
+        "per song, in the same order.\n" + lines
+    )
+    r = requests.post(
+        "https://api.groq.com/openai/v1/chat/completions",
+        headers={"Authorization": "Bearer " + os.getenv("GROQ_API_KEY", "")},
+        json={
+            "model": "openai/gpt-oss-20b",
+            "messages": [{"role": "user", "content": prompt}],
+            "response_format": {"type": "json_object"},
+            "temperature": 0.2,
+        },
+    )
+    if r.status_code != 200:
+        return None
+    try:
+        labels = json.loads(r.json()["choices"][0]["message"]["content"])["labels"]
+    except Exception:
+        return None
+    if len(labels) != len(tracks):
+        return None
+    return labels
+
+
+@app.get("/label-test")
+def label_test():
+    sample = [
+        {"track": "Sleepless", "artist": "AP Dhillon"},
+        {"track": "After Dark", "artist": "Drake, Static Major, Ty Dolla $ign"},
+        {"track": "Peaceful Piano", "artist": "Relaxing Piano"},
+        {"track": "Badfella", "artist": "Sidhu Moose Wala"},
+    ]
+    return label_tracks(sample) or {"error": "labelling failed"}
+
+
+@app.get("/relabel-catalogue")
+def relabel_catalogue():
+    data = collection.get(include=["metadatas"])
+    ids = data["ids"]
+    metas = data["metadatas"]
+    new_ids, new_docs, new_metas = [], [], []
+    failed = 0
+    for start in range(0, len(ids), 8):
+        batch_ids = ids[start:start + 8]
+        batch_metas = metas[start:start + 8]
+        labels = label_tracks(
+            [{"track": m["track"], "artist": m["artist"]} for m in batch_metas]
+        )
+        if labels is None:
+            failed += len(batch_ids)
+            continue
+        for id_, m, lab in zip(batch_ids, batch_metas, labels):
+            moods = ", ".join(lab.get("moods", []))
+            energy = str(lab.get("energy", "medium")).lower()
+            if energy not in ("low", "medium", "high"):
+                energy = "medium"
+            tags = moods + ", " + energy + " energy"
+            new_ids.append(id_)
+            new_docs.append("Mood: " + tags + ". Music that feels " + tags + ".")
+            new_metas.append(
+                {"track": m["track"], "artist": m["artist"], "tags": tags, "energy": energy}
+            )
+        time.sleep(2)
+    if new_ids:
+        collection.upsert(
+            ids=new_ids,
+            documents=new_docs,
+            metadatas=new_metas,
+            embeddings=embed(new_docs),
+        )
+    return {"relabelled": len(new_ids), "failed": failed, "total": collection.count()}
+
+LABEL_LAST_ERROR = ""
+
+
+def label_tracks(tracks):
+    global LABEL_LAST_ERROR
+    lines = "\n".join(
+        str(i + 1) + ". " + t["track"] + " by " + t["artist"]
+        for i, t in enumerate(tracks)
+    )
+    prompt = (
+        "For each song below, give its likely mood and energy, judged from "
+        "the title and artist. Reply with ONLY a JSON object like "
+        '{"labels": [{"moods": ["word", "word", "word"], "energy": "low"}]} '
+        'where energy is "low", "medium" or "high", with exactly one entry '
+        "per song, in the same order.\n" + lines
+    )
+    for attempt in range(3):
+        try:
+            r = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": "Bearer " + os.getenv("GROQ_API_KEY", "")},
+                json={
+                    "model": "openai/gpt-oss-20b",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "response_format": {"type": "json_object"},
+                    "temperature": 0.2,
+                },
+                timeout=60,
+            )
+        except Exception as e:
+            LABEL_LAST_ERROR = "request failed: " + str(e)
+            time.sleep(3)
+            continue
+        if r.status_code == 429:
+            LABEL_LAST_ERROR = "rate limited: " + r.text[:300]
+            time.sleep(10)
+            continue
+        if r.status_code != 200:
+            LABEL_LAST_ERROR = str(r.status_code) + " " + r.text[:300]
+            time.sleep(3)
+            continue
+        try:
+            content = r.json()["choices"][0]["message"]["content"]
+            labels = json.loads(content)["labels"]
+        except Exception as e:
+            LABEL_LAST_ERROR = "bad json: " + str(e) + " | " + r.text[:300]
+            continue
+        if len(labels) != len(tracks):
+            LABEL_LAST_ERROR = (
+                "wrong count: got " + str(len(labels)) + ", expected " + str(len(tracks))
+            )
+            continue
+        return labels
+    return None
+
+
+@app.get("/label-error")
+def label_error():
+    return {"last_error": LABEL_LAST_ERROR}
+
+@app.get("/relabel-some")
+def relabel_some(limit: int = 40):
+    data = collection.get(include=["metadatas"])
+    todo = [
+        (i, m) for i, m in zip(data["ids"], data["metadatas"])
+        if not m.get("labelled")
+    ]
+    before = len(todo)
+    todo = todo[:limit]
+    new_ids, new_docs, new_metas = [], [], []
+    for start in range(0, len(todo), 8):
+        batch = todo[start:start + 8]
+        labels = label_tracks(
+            [{"track": m["track"], "artist": m["artist"]} for _, m in batch]
+        )
+        if labels is None:
+            continue
+        for (id_, m), lab in zip(batch, labels):
+            moods = ", ".join(lab.get("moods", []))
+            energy = str(lab.get("energy", "medium")).lower()
+            if energy not in ("low", "medium", "high"):
+                energy = "medium"
+            tags = moods + ", " + energy + " energy"
+            new_ids.append(id_)
+            new_docs.append("Mood: " + tags + ". Music that feels " + tags + ".")
+            new_metas.append(
+                {
+                    "track": m["track"],
+                    "artist": m["artist"],
+                    "tags": tags,
+                    "energy": energy,
+                    "labelled": True,
+                }
+            )
+        time.sleep(1)
+    if new_ids:
+        collection.upsert(
+            ids=new_ids,
+            documents=new_docs,
+            metadatas=new_metas,
+            embeddings=embed(new_docs),
+        )
+    return {
+        "relabelled_now": len(new_ids),
+        "still_to_do": before - len(new_ids),
+        "total": collection.count(),
+    }

@@ -16,9 +16,7 @@ habits, including whether you are a binge listener.
 
 \- Spotify login (OAuth Authorization Code flow) with automatic token refresh
 
-\- Mood to music: an LLM (Groq) turns text like "tired, want calm music to focus"
-
-&#x20; into a mood profile (moods, energy level, genres)
+\- Mood to music: an LLM (Groq or Gemini, switchable) turns text like "tired, want calm music to focus"
 
 \- RAG-style retrieval: songs are embedded with sentence-transformers and stored
 
@@ -38,7 +36,7 @@ habits, including whether you are a binge listener.
 
 Python, FastAPI, SQLite, ChromaDB, sentence-transformers, APScheduler,
 
-Spotify Web API, Groq API
+Spotify Web API, Groq API, Gemini API
 
 
 
